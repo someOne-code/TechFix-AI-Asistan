@@ -42,7 +42,7 @@ async def lifespan(app: FastAPI):
         logger.error(f"Database initialization error: {e}")
 
     # Initialize AI Persona
-    ai_manager.initialize_persona()
+    await ai_manager.initialize_persona()
 
     yield
 
@@ -61,6 +61,7 @@ app.add_middleware(
 
 @app.post("/talk")
 async def talk(
+    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     session_id: str = Form("global_demo") # Allow client to send session_id
 ):
@@ -79,7 +80,7 @@ async def talk(
 
         # 1. Speech to Text (Transcribe)
         try:
-            transcription = ai_manager.client.audio.transcriptions.create(
+            transcription = await ai_manager.client.audio.transcriptions.create(
                 file=audio_buffer,
                 model="whisper-large-v3",
                 language="tr"
@@ -99,19 +100,19 @@ async def talk(
         # 2. Parallel AI Tasks: Intent & Sentiment
         # We run these concurrently to optimize latency
         async def get_intent():
-            return ai_manager.determine_intent(user_text)
+            return await ai_manager.determine_intent(user_text)
 
         async def get_sentiment():
-            return ai_manager.analyze_sentiment(user_text)
+            return await ai_manager.analyze_sentiment(user_text)
 
         intent, sentiment = await asyncio.gather(get_intent(), get_sentiment())
 
         logger.info(f"Intent: {intent} | Sentiment: {sentiment}")
 
         if "OUT_OF_SCOPE" in intent:
-             ai_response = f"Maalesef, ben {ai_manager.company_identity} asistanıyım. Sadece hizmetlerimizle ilgili yardımcı olabilirim."
              context_data = "OUT_OF_SCOPE"
-
+        elif "COMPANY_INFO" in intent:
+             context_data = "COMPANY_INFO_REQUEST"
         else:
             context_data = ""
 
@@ -120,28 +121,23 @@ async def talk(
                 # Get context from memory
                 history_context = global_memory.get_context()
 
-                sql_query = ai_manager.generate_sql(user_text, context_history=history_context)
+                sql_query = await ai_manager.generate_sql(user_text, context_history=history_context)
                 logger.info(f"Generated SQL: {sql_query}")
 
                 context_data = db_manager.run_sql_query(sql_query)
                 logger.info(f"DB Result: {context_data}")
 
-            # 4. Generate Response
-            ai_response = ai_manager.generate_response(user_text, context=context_data)
+        # 4. Generate Response
+        ai_response = await ai_manager.generate_response(user_text, context=context_data)
 
         logger.info(f"AI Response: {ai_response}")
 
         # Update Memory
         global_memory.add_turn(user_text, ai_response)
 
-        # Save Log asynchronously (fire and forget)
-        # We need a synchronous wrapper for the db call or run it in threadpool
-        # Fastapi BackgroundTasks is perfect here but I didn't add it to signature.
-        # I will add it to the DB manager or just run it here.
-        # Ideally, use BackgroundTasks.
-        db_manager.log_call(user_text, ai_response, sentiment, None)
+        # Save Log asynchronously
+        background_tasks.add_task(db_manager.log_call, user_text, ai_response, sentiment, None)
 
-        # 5. Text to Speech
         async def audio_stream_generator():
             communicate = edge_tts.Communicate(ai_response, settings.SES_MODELI)
             async for chunk in communicate.stream():
@@ -170,7 +166,7 @@ async def end_call(background_tasks: BackgroundTasks):
         # For simplicity, we just log the summary as a separate entry or update logic.
         # But our log_call inserts a new row.
         # Let's just insert a "Summary" log.
-        db_manager.log_call("SYSTEM_END_CALL", "N/A", "N/A", summary)
+        background_tasks.add_task(db_manager.log_call, "SYSTEM_END_CALL", "N/A", "N/A", summary)
 
         global_memory.clear()
         logger.info("Call ended and memory cleared.")

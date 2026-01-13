@@ -1,5 +1,5 @@
 import logging
-from groq import Groq
+from groq import AsyncGroq
 from config import settings, logger
 from database import DatabaseManager
 from utils import TextUtils
@@ -7,12 +7,12 @@ from typing import Optional
 
 class AIManager:
     def __init__(self, db_manager: DatabaseManager):
-        self.client = Groq(api_key=settings.GROQ_API_KEY)
+        self.client = AsyncGroq(api_key=settings.GROQ_API_KEY)
         self.db = db_manager
         self.company_identity: str = "Profesyonel Asistan" # Default
         self.system_prompt_base: str = ""
 
-    def initialize_persona(self) -> None:
+    async def initialize_persona(self) -> None:
         """Determines company identity based on DB content or falls back to default."""
         try:
             logger.info("Initializing Company Identity...")
@@ -22,7 +22,7 @@ class AIManager:
                 return
 
             prompt = f"Verilere bak: {sample_data}. Şirket ismi ve vizyon uydur. Kısa olsun."
-            resp = self.client.chat.completions.create(
+            resp = await self.client.chat.completions.create(
                 messages=[{"role": "user", "content": prompt}],
                 model="llama-3.3-70b-versatile",
                 temperature=0.3
@@ -34,20 +34,21 @@ class AIManager:
             logger.error(f"Failed to generate identity: {e}. Using fallback.")
             self.company_identity = "Profesyonel Müşteri Hizmetleri Asistanı"
 
-    def determine_intent(self, user_text: str) -> str:
-        """Decides if the user wants SQL data or just chat."""
+    async def determine_intent(self, user_text: str) -> str:
+        """Decides if the user wants SQL data, company info, or just chat."""
         try:
             prompt = f"""
-            Evaluate the input:
-            1. Is it a greeting, thanks, or small talk? -> Return "CHAT"
-            2. Is it a question about products, stock, prices, or recommendations? -> Return "SQL"
-            3. Is it clearly outside the scope of a music store assistant (e.g., math, politics, history, personal advice)? -> Return "OUT_OF_SCOPE"
+            Evaluate the input and return ONE word:
+            - "SQL" -> The user wants data about products, albums, songs, stock, or prices.
+            - "CHAT" -> The user is greeting, chatting, or asking casual questions unrelated to company-specific data.
+            - "COMPANY_INFO" -> The user is asking about the company's services, what it does, or why to use it.
+            - "OUT_OF_SCOPE" -> The input is clearly irrelevant (e.g., math, politics).
 
             Input: "{user_text}"
 
-            Return ONLY the label (SQL, CHAT, or OUT_OF_SCOPE).
+            Return ONLY the label (SQL, CHAT, COMPANY_INFO, or OUT_OF_SCOPE).
             """
-            resp = self.client.chat.completions.create(
+            resp = await self.client.chat.completions.create(
                 messages=[{"role": "user", "content": prompt}],
                 model="llama-3.3-70b-versatile",
                 temperature=0.1
@@ -57,14 +58,14 @@ class AIManager:
             logger.error(f"Intent detection failed: {e}")
             return "CHAT" # Fail-safe
 
-    def analyze_sentiment(self, user_text: str) -> str:
+    async def analyze_sentiment(self, user_text: str) -> str:
         """Analyzes the sentiment of the user text."""
         try:
             prompt = f"""
             Analyze sentiment of: "{user_text}"
             Return ONLY one word: POSITIVE, NEUTRAL, or NEGATIVE.
             """
-            resp = self.client.chat.completions.create(
+            resp = await self.client.chat.completions.create(
                 messages=[{"role": "user", "content": prompt}],
                 model="llama-3.3-70b-versatile",
                 temperature=0.1
@@ -74,7 +75,7 @@ class AIManager:
             logger.warning(f"Sentiment analysis failed: {e}")
             return "NEUTRAL"
 
-    def generate_summary(self, conversation_history: str) -> str:
+    async def generate_summary(self, conversation_history: str) -> str:
         """Generates a summary of the conversation."""
         if not conversation_history:
             return "No conversation."
@@ -83,7 +84,7 @@ class AIManager:
             Summarize the following call notes briefly:
             {conversation_history}
             """
-            resp = self.client.chat.completions.create(
+            resp = await self.client.chat.completions.create(
                 messages=[{"role": "user", "content": prompt}],
                 model="llama-3.3-70b-versatile",
                 temperature=0.3
@@ -93,7 +94,7 @@ class AIManager:
             logger.error(f"Summary generation failed: {e}")
             return "Summary generation failed."
 
-    def generate_sql(self, user_text: str, context_history: str = "") -> str:
+    async def generate_sql(self, user_text: str, context_history: str = "") -> str:
         """Generates SQL query from user text."""
         schema = self.db.get_schema_info()
         if not schema:
@@ -119,7 +120,7 @@ class AIManager:
         - Always limit results to 5 unless specified otherwise.
         """
         try:
-            sql_resp = self.client.chat.completions.create(
+            sql_resp = await self.client.chat.completions.create(
                 messages=[{"role": "user", "content": sql_prompt}],
                 model="llama-3.3-70b-versatile",
                 temperature=0.1
@@ -130,7 +131,7 @@ class AIManager:
             logger.error(f"SQL Generation failed: {e}")
             return "SELECT 'YOK'"
 
-    def generate_response(self, user_text: str, context: str = "") -> str:
+    async def generate_response(self, user_text: str, context: str = "") -> str:
         """Generates the final natural language response."""
 
         system_prompt = f"""
@@ -139,18 +140,27 @@ class AIManager:
         CORE MANDATE:
         - Assist with music, albums, and company services.
         - NEVER answer out-of-scope questions (math, politics, personal life).
-        - If context is 'OUT_OF_SCOPE', politely decline.
 
         TONE & STYLE:
-        - Speak like a helpful Turkish customer service representative.
-        - Natural, conversational, and concise.
-        - NO technical jargon (e.g., do not say "SQL", "database", "table", "row").
-        - **DO NOT** mention the company name or vision unless explicitly asked.
-        - Summarize lists naturally (e.g., "We have rock albums like X and Y") instead of reading them item by item.
-        - If the list is long, mention a few and ask if they want to hear more.
+        - Professional, helpful, and concise.
+        - Friendly but business-appropriate.
+        - NO technical jargon (e.g., "SQL", "database").
+        - **DO NOT** mention the company name unless explicitly asked.
         """
 
-        if context:
+        if context == "COMPANY_INFO_REQUEST":
+            user_prompt = f"""
+            Customer: "{user_text}"
+            Task: Provide a clear, concise explanation of the company's services and vision.
+            Language: Turkish.
+            """
+        elif context == "OUT_OF_SCOPE":
+            user_prompt = f"""
+            Customer: "{user_text}"
+            Task: Politely state that you are a corporate assistant for {self.company_identity} and can only help with music-related inquiries.
+            Language: Turkish.
+            """
+        elif context:
             user_prompt = f"""
             Customer: "{user_text}"
             Data/Context: "{context}"
@@ -160,15 +170,17 @@ class AIManager:
             2. If Data is 'ÜRÜN_KATEGORISI_YOK', say we don't sell that.
             3. If Data is 'HATA', say there's a system issue.
             4. If Data is a list, summarize it nicely in Turkish.
+            Language: Turkish.
             """
         else:
             user_prompt = f"""
             Customer: "{user_text}"
-            Answer shortly and clearly in Turkish.
+            Task: Answer naturally in friendly, short sentences (CHAT intent).
+            Language: Turkish.
             """
 
         try:
-            final_resp = self.client.chat.completions.create(
+            final_resp = await self.client.chat.completions.create(
                 messages=[
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt}
