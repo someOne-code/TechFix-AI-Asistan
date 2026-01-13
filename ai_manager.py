@@ -38,10 +38,13 @@ class AIManager:
         """Decides if the user wants SQL data or just chat."""
         try:
             prompt = f"""
-            Soru: "{user_text}"
-            Karar (Tek Kelime):
-            - Ürün/Stok/Fiyat/Bilgi/Öneri -> "SQL"
-            - Selam/Geyik/Hava/Naber/Teşekkür -> "CHAT"
+            Evaluate the input: If it is outside the scope of {self.company_identity} (e.g., family tree, math, general world facts), return 'OUT_OF_SCOPE' immediately. Do not attempt to answer.
+
+            Input: "{user_text}"
+
+            Otherwise, Classify (One Word):
+            - Product/Stock/Price/Info/Recommendation -> "SQL"
+            - Greeting/Small Talk/Thanks -> "CHAT"
             """
             resp = self.client.chat.completions.create(
                 messages=[{"role": "user", "content": prompt}],
@@ -53,20 +56,63 @@ class AIManager:
             logger.error(f"Intent detection failed: {e}")
             return "CHAT" # Fail-safe
 
-    def generate_sql(self, user_text: str) -> str:
+    def analyze_sentiment(self, user_text: str) -> str:
+        """Analyzes the sentiment of the user text."""
+        try:
+            prompt = f"""
+            Analyze sentiment of: "{user_text}"
+            Return ONLY one word: POSITIVE, NEUTRAL, or NEGATIVE.
+            """
+            resp = self.client.chat.completions.create(
+                messages=[{"role": "user", "content": prompt}],
+                model="llama-3.3-70b-versatile",
+                temperature=0.1
+            )
+            return resp.choices[0].message.content.strip()
+        except Exception as e:
+            logger.warning(f"Sentiment analysis failed: {e}")
+            return "NEUTRAL"
+
+    def generate_summary(self, conversation_history: str) -> str:
+        """Generates a summary of the conversation."""
+        if not conversation_history:
+            return "No conversation."
+        try:
+            prompt = f"""
+            Summarize the following call notes briefly:
+            {conversation_history}
+            """
+            resp = self.client.chat.completions.create(
+                messages=[{"role": "user", "content": prompt}],
+                model="llama-3.3-70b-versatile",
+                temperature=0.3
+            )
+            return resp.choices[0].message.content.strip()
+        except Exception as e:
+            logger.error(f"Summary generation failed: {e}")
+            return "Summary generation failed."
+
+    def generate_sql(self, user_text: str, context_history: str = "") -> str:
         """Generates SQL query from user text."""
         schema = self.db.get_schema_info()
         if not schema:
             return "SELECT 'YOK'"
 
         sql_prompt = f"""
-        Şema: {schema}
-        Soru: "{user_text}"
+        Schema:
+        {schema}
 
-        GÖREVİN:
-        1. Kullanıcının istediği ürün (örn: Saat, Ayakkabı, Yemek) tablolarda ve sütunlarda VAR MI? Kontrol et.
-        2. EĞER YOKSA: Sadece `SELECT 'YOK'` yaz. ASLA uydurma SQL yazma.
-        3. EĞER VARSA: Geçerli SQLite kodunu yaz.
+        Conversation History:
+        {context_history}
+
+        Current Question: "{user_text}"
+
+        TASK:
+        1. Check if the product/service exists in the schema.
+        2. IF NOT EXISTS: Return `SELECT 'YOK'`.
+        3. IF EXISTS: Write a valid SQL query.
+        - Pay attention to Foreign Keys and Table Relationships defined in the schema.
+        - Use JOINs correctly.
         """
         try:
             sql_resp = self.client.chat.completions.create(
