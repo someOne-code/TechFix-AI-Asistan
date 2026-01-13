@@ -21,7 +21,10 @@ class DatabaseManager:
         # Use provided URL or build from settings. Default to sqlite if not provided.
         # Ideally, settings.DB_URL should be used, but keeping backward compat with DB_NAME for sqlite
         if db_url:
-            self.db_url = db_url
+            if "://" not in db_url:
+                self.db_url = f"sqlite:///{db_url}"
+            else:
+                self.db_url = db_url
         else:
             self.db_url = f"sqlite:///{settings.DB_NAME}"
 
