@@ -14,17 +14,20 @@ from database import DatabaseManager
 from ai_manager import AIManager
 from memory import ConversationMemory
 
+from typing import Dict
+
 # Global instances
 db_manager = DatabaseManager(settings.DB_NAME)
 ai_manager = AIManager(db_manager)
-# Memory is session-based. For this simple API, we might need a way to track sessions.
-# Since the original API didn't have session management, we'll try to use a header or
-# assume a single session "demo_session" if not provided, or generate one.
-# But `talk` endpoint accepts a file. We'll stick to a global memory for simplicity
-# OR use a dict of memories if we can get a session ID.
-# Given the prototype nature, I'll instantiate memory globally but ideally it should be per user.
-# I'll modify the endpoint to accept a session_id in form data if possible, else default.
-global_memory = ConversationMemory(redis_url=os.getenv("REDIS_URL"), session_id="global_demo")
+
+# Session Management
+sessions: Dict[str, ConversationMemory] = {}
+
+def get_memory(session_id: str) -> ConversationMemory:
+    if session_id not in sessions:
+        logger.info(f"Creating new memory for session: {session_id}")
+        sessions[session_id] = ConversationMemory(redis_url=os.getenv("REDIS_URL"), session_id=session_id)
+    return sessions[session_id]
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -33,11 +36,20 @@ async def lifespan(app: FastAPI):
 
     # Initialize Database Check
     try:
+        # Check if DB exists, if not run init (handled by create_db logic conceptually,
+        # but here we just check connection)
         schema = db_manager.get_schema_info()
         if schema:
             logger.info("Database connected successfully.")
         else:
-            logger.warning("Database schema is empty or DB file not found.")
+            logger.warning("Database schema is empty. Running recreation script...")
+            try:
+                import create_db
+                create_db.init_db()
+                logger.info("Database created.")
+            except Exception as recreate_err:
+                logger.error(f"Failed to recreate DB: {recreate_err}")
+
     except Exception as e:
         logger.error(f"Database initialization error: {e}")
 
@@ -48,7 +60,10 @@ async def lifespan(app: FastAPI):
 
     # Shutdown
     logger.info("Application shutting down...")
-    global_memory.clear()
+    # Clear all local memories
+    for mem in sessions.values():
+        mem.clear()
+    sessions.clear()
 
 app = FastAPI(lifespan=lifespan)
 
@@ -66,12 +81,8 @@ async def talk(
     session_id: str = Form("global_demo") # Allow client to send session_id
 ):
     try:
-        # Manage memory per session
-        # (In a real app, use a Session Manager. Here we hack it for the demo)
-        if session_id != global_memory.session_id:
-            # Simple switch for demo purposes, or re-instantiate if we had a manager
-            # For now, let's just use the global one.
-            pass
+        # Get memory for this session
+        memory = get_memory(session_id)
 
         # Read audio file
         audio_content = await file.read()
@@ -119,7 +130,7 @@ async def talk(
             # 3. Handle SQL Intent
             if "SQL" in intent:
                 # Get context from memory
-                history_context = global_memory.get_context()
+                history_context = memory.get_context()
 
                 sql_query = await ai_manager.generate_sql(user_text, context_history=history_context)
                 logger.info(f"Generated SQL: {sql_query}")
@@ -133,7 +144,7 @@ async def talk(
         logger.info(f"AI Response: {ai_response}")
 
         # Update Memory
-        global_memory.add_turn(user_text, ai_response)
+        memory.add_turn(user_text, ai_response)
 
         # Save Log asynchronously
         background_tasks.add_task(db_manager.log_call, user_text, ai_response, sentiment, None)
@@ -151,25 +162,29 @@ async def talk(
         return {"error": str(e)}
 
 @app.post("/end-call")
-async def end_call(background_tasks: BackgroundTasks):
+async def end_call(
+    background_tasks: BackgroundTasks,
+    session_id: str = Form("global_demo")
+):
     try:
-        context = global_memory.get_context()
+        memory = get_memory(session_id)
+        context = memory.get_context()
         if not context:
             return {"status": "Empty"}
 
         # Generate summary
-        summary = ai_manager.generate_summary(context)
+        summary = await ai_manager.generate_summary(context)
         logger.info(f"Call Summary: {summary}")
 
         # Log final summary to DB
-        # We can update the last log entry or create a new one.
-        # For simplicity, we just log the summary as a separate entry or update logic.
-        # But our log_call inserts a new row.
-        # Let's just insert a "Summary" log.
         background_tasks.add_task(db_manager.log_call, "SYSTEM_END_CALL", "N/A", "N/A", summary)
 
-        global_memory.clear()
-        logger.info("Call ended and memory cleared.")
+        memory.clear()
+        # Remove from active sessions
+        if session_id in sessions:
+            del sessions[session_id]
+
+        logger.info(f"Call ended and memory cleared for session {session_id}.")
         return {"status": "OK", "summary": summary}
     except Exception as e:
         logger.error(f"Error saving notes: {e}")
