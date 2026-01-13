@@ -168,6 +168,7 @@
         let isCalling = false;
         let startTime;
         let timerInterval;
+        let currentAudio = null; // Track current audio playback
 
         // Elementleri Seç
         const statusText = document.getElementById("statusText");
@@ -211,6 +212,13 @@
             // Butona basınca kayıt başlar
             talkBtn.onmousedown = (e) => {
                 e.preventDefault(); // Mobilde seçimi engelle
+
+                // Stop current audio if playing (Barge-in)
+                if (currentAudio) {
+                    currentAudio.pause();
+                    currentAudio.currentTime = 0;
+                }
+
                 audioChunks = [];
                 mediaRecorder.start();
                 talkBtn.classList.add("talking");
@@ -251,14 +259,14 @@
                     // Gelen ses dosyasını çal (Blob olarak)
                     const audioBlobResponse = await response.blob();
                     const audioUrl = URL.createObjectURL(audioBlobResponse);
-                    const audio = new Audio(audioUrl);
+                    currentAudio = new Audio(audioUrl);
                     
                     statusText.innerText = "Aslı konuşuyor...";
                     statusText.style.color = "#30d158";
                     
-                    audio.play();
+                    currentAudio.play();
 
-                    audio.onended = () => {
+                    currentAudio.onended = () => {
                         statusText.innerText = "Sıra sizde...";
                         statusText.style.color = "#8e8e93";
                     };

@@ -179,6 +179,12 @@ async def end_call(
         # Log final summary to DB
         background_tasks.add_task(db_manager.log_call, "SYSTEM_END_CALL", "N/A", "N/A", summary)
 
+        # Write summary to text file as requested
+        with open("GORUSME_NOTLARI.txt", "a", encoding="utf-8") as f:
+            f.write(f"\n--- Session {session_id} Summary ---\n")
+            f.write(summary)
+            f.write("\n-----------------------------------\n")
+
         memory.clear()
         # Remove from active sessions
         if session_id in sessions:
