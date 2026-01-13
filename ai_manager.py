@@ -118,6 +118,8 @@ class AIManager:
         - Pay attention to Foreign Keys and Table Relationships defined in the schema.
         - Use JOINs correctly.
         - Always limit results to 5 unless specified otherwise.
+        - **IMPORTANT**: If asking for 'cheapest AND expensive' (min/max) together, DO NOT use simple UNION with ORDER BY. Use subqueries:
+          `SELECT * FROM (SELECT * FROM Track ORDER BY UnitPrice ASC LIMIT 1) UNION ALL SELECT * FROM (SELECT * FROM Track ORDER BY UnitPrice DESC LIMIT 1)`
         """
         try:
             sql_resp = await self.client.chat.completions.create(
