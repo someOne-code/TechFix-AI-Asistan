@@ -38,11 +38,42 @@ class AIManager:
         """Decides if the user wants SQL data, company info, or just chat."""
         try:
             prompt = f"""
-            Evaluate the input and return ONE word:
-            - "SQL" -> The user wants data about products, albums, songs, stock, or prices.
-            - "CHAT" -> The user is greeting, chatting, or asking casual questions unrelated to company-specific data.
-            - "COMPANY_INFO" -> The user is asking about the company's services, what it does, or why to use it.
-            - "OUT_OF_SCOPE" -> The input is clearly irrelevant (e.g., math, politics).
+            INTENT CLASSIFICATION
+            Classify the input into ONE of these categories:
+
+            1. **SQL** Intent
+            User is asking for data about:
+            - Music tracks, albums, artists, composers
+            - Prices (cheapest, most expensive, price ranges)
+            - Genres (rock, pop, jazz, etc.)
+            - Playlists and playlist contents
+            - Sales data, invoices, customers
+            - Employees or support representatives
+            - Media types (MP3, AAC, etc.)
+            - Any query that requires database lookup
+
+            2. **CHAT** Intent
+            User is making casual conversation:
+            - Greetings (hello, hi, how are you)
+            - Asking about company services/policies
+            - General music preferences or recommendations
+            - Feedback or appreciation
+            - Questions about how the service works
+
+            3. **COMPANY_INFO** Intent
+            User is asking specifically about:
+            - Company vision, mission, or identity
+            - What services the company provides
+            - Why they should use this service
+            - Company background or history
+
+            4. **OUT_OF_SCOPE** Intent
+            User is asking about topics unrelated to music services:
+            - Mathematics, homework, calculations
+            - Personal life advice
+            - Politics, religion
+            - Technical support for unrelated products
+            - Any topic clearly outside music/entertainment domain
 
             Input: "{user_text}"
 
@@ -101,6 +132,8 @@ class AIManager:
             return "SELECT 'YOK'"
 
         sql_prompt = f"""
+        SQL GENERATION RULES
+
         Schema:
         {schema}
 
@@ -109,17 +142,34 @@ class AIManager:
 
         Current Question: "{user_text}"
 
+        Safety and Syntax Rules:
+        1. **READ-ONLY Operations**
+           - ONLY generate SELECT queries
+           - NEVER use: DROP, DELETE, INSERT, UPDATE, ALTER, TRUNCATE
+
+        2. **UNION Query Safety (CRITICAL)**
+           - ❌ WRONG: `SELECT * FROM Track ORDER BY UnitPrice LIMIT 1 UNION ALL SELECT * FROM Track ORDER BY UnitPrice DESC LIMIT 1`
+           - ✅ CORRECT: `(SELECT * FROM Track ORDER BY UnitPrice LIMIT 1) UNION ALL (SELECT * FROM Track ORDER BY UnitPrice DESC LIMIT 1)`
+           - ✅ BETTER: `SELECT * FROM Track WHERE UnitPrice IN ((SELECT MIN(UnitPrice) FROM Track), (SELECT MAX(UnitPrice) FROM Track)) LIMIT 2`
+
+        3. **For Min/Max Queries, Use:**
+           - Aggregate functions: `MIN()`, `MAX()`, `AVG()`, `COUNT()`
+           - Subqueries with parentheses if using UNION
+
+        4. **JOIN Syntax**
+           - Always use explicit JOIN syntax (INNER JOIN, LEFT JOIN)
+           - Specify join conditions with ON clause
+           - Use table aliases for clarity
+
+        5. **Default Limits**
+           - Always add `LIMIT 5` unless user specifies a different number
+           - For pagination, use `LIMIT X OFFSET Y` (Check history for previous query)
+
+        6. **Non-Existent Data**
+           - If the requested data doesn't exist in the schema, return: `SELECT 'YOK'`
+
         TASK:
-        1. Analyze the Current Question and History.
-        2. If the user asks for "more" or "next page", check the history for the previous query and use OFFSET to fetch the next set of results.
-        3. Check if the product/service exists in the schema.
-        4. IF NOT EXISTS: Return `SELECT 'YOK'`.
-        5. IF EXISTS: Write a valid SQL query.
-        - Pay attention to Foreign Keys and Table Relationships defined in the schema.
-        - Use JOINs correctly.
-        - Always limit results to 5 unless specified otherwise.
-        - **IMPORTANT**: If asking for 'cheapest AND expensive' (min/max) together, DO NOT use simple UNION with ORDER BY. Use subqueries:
-          `SELECT * FROM (SELECT * FROM Track ORDER BY UnitPrice ASC LIMIT 1) UNION ALL SELECT * FROM (SELECT * FROM Track ORDER BY UnitPrice DESC LIMIT 1)`
+        Generate a valid SQLite query for the Current Question.
         """
         try:
             sql_resp = await self.client.chat.completions.create(
@@ -139,32 +189,59 @@ class AIManager:
         system_prompt = f"""
         ROLE: You are the professional assistant for {self.company_identity}.
 
-        CORE MANDATE:
-        - Assist with music, albums, and company services.
-        - NEVER answer out-of-scope questions (math, politics, personal life).
+        RESPONSE GUIDELINES
+
+        1. **For SQL Results (Context provided):**
+           - Convert results into friendly, natural language.
+           - Include relevant details (prices, names, counts).
+           - Be conversational, not technical.
+           - Example: "The cheapest track is 'X' at $0.99."
+
+        2. **For CHAT Intent (No Data Context):**
+           - Respond naturally and friendly.
+           - Show enthusiasm about music.
+           - Offer to help with specific queries.
+           - Keep responses concise.
+
+        3. **For COMPANY_INFO Intent:**
+           - Explain the company's music service offerings.
+           - Highlight the catalog (tracks, albums, artists, genres).
+           - Be professional and informative.
+
+        4. **For OUT_OF_SCOPE Intent:**
+           - Politely decline.
+           - Redirect to music-related topics.
+           - Maintain friendly tone.
 
         TONE & STYLE:
-        - Professional, helpful, and concise.
-        - Friendly but business-appropriate.
-        - NO technical jargon (e.g., "SQL", "database").
-        - **DO NOT** mention the company name unless explicitly asked.
+        ✅ **Do:**
+        - Be friendly, warm, and professional
+        - Use conversational language (Turkish)
+        - Show enthusiasm for music
+        - Provide clear, concise answers
+
+        ❌ **Don't:**
+        - Use technical jargon (SQL, database, schema)
+        - Be robotic or overly formal
+        - Provide incomplete information
         """
 
         if context == "COMPANY_INFO_REQUEST":
             user_prompt = f"""
             Customer: "{user_text}"
-            Task: Provide a clear, concise explanation of the company's services and vision.
-            Language: Turkish.
+            Intent: COMPANY_INFO
+            Task: Provide company service info in Turkish.
             """
         elif context == "OUT_OF_SCOPE":
             user_prompt = f"""
             Customer: "{user_text}"
-            Task: Politely state that you are a corporate assistant for {self.company_identity} and can only help with music-related inquiries.
-            Language: Turkish.
+            Intent: OUT_OF_SCOPE
+            Task: Politely decline in Turkish.
             """
         elif context:
             user_prompt = f"""
             Customer: "{user_text}"
+            Intent: SQL (Data Provided)
             Data/Context: "{context}"
 
             Instructions:
@@ -172,13 +249,12 @@ class AIManager:
             2. If Data is 'ÜRÜN_KATEGORISI_YOK', say we don't sell that.
             3. If Data is 'HATA', say there's a system issue.
             4. If Data is a list, summarize it nicely in Turkish.
-            Language: Turkish.
             """
         else:
             user_prompt = f"""
             Customer: "{user_text}"
-            Task: Answer naturally in friendly, short sentences (CHAT intent).
-            Language: Turkish.
+            Intent: CHAT
+            Task: Answer naturally in friendly, short sentences (Turkish).
             """
 
         try:
