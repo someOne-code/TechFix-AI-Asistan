@@ -45,11 +45,17 @@ class DatabaseManager:
     def get_schema_info(self) -> str:
         """
         Retrieves schema information including Foreign Keys.
+        Excludes sensitive tables (Customer, Employee, Invoice, etc.) to protect PII.
         """
         inspector = inspect(self.engine)
         schema_str = ""
 
+        SENSITIVE_TABLES = ['Customer', 'Employee', 'Invoice', 'InvoiceLine', 'call_logs']
+
         for table_name in inspector.get_table_names():
+            if table_name in SENSITIVE_TABLES:
+                continue
+
             # Get Columns
             columns = inspector.get_columns(table_name)
             col_strs = [f"{col['name']} ({col['type']})" for col in columns]
@@ -75,8 +81,12 @@ class DatabaseManager:
         try:
             inspector = inspect(self.engine)
             ornek_veriler = ""
+            SENSITIVE_TABLES = ['Customer', 'Employee', 'Invoice', 'InvoiceLine', 'call_logs']
+
             with self.engine.connect() as conn:
                 for table_name in inspector.get_table_names():
+                    if table_name in SENSITIVE_TABLES:
+                        continue
                     try:
                         result = conn.execute(text(f"SELECT * FROM {table_name} LIMIT 3"))
                         rows = result.fetchall()

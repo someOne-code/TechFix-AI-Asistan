@@ -146,6 +146,7 @@ class AIManager:
         1. **READ-ONLY Operations**
            - ONLY generate SELECT queries
            - NEVER use: DROP, DELETE, INSERT, UPDATE, ALTER, TRUNCATE
+           - **STRICTLY FORBIDDEN**: Do NOT query 'Customer', 'Employee', or 'Invoice' tables. Access is restricted to Music Catalog (Albums, Tracks, Artists, Genres, Playlists).
 
         2. **UNION Query Safety (CRITICAL)**
            - ❌ WRONG: `SELECT * FROM Track ORDER BY UnitPrice LIMIT 1 UNION ALL SELECT * FROM Track ORDER BY UnitPrice DESC LIMIT 1`
