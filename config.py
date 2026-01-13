@@ -17,11 +17,7 @@ try:
     settings = Settings()
 except Exception as e:
     print(f"Configuration Error: {e}")
-    # In a real scenario, we might want to exit here,
-    # but for now we let it fail or use defaults if we had them optional.
-    # Since GROQ_API_KEY is required, it will raise error.
-    # We will handle it in main.py execution, but here just defining class.
-    pass
+    sys.exit(1)
 
 # --- LOGGING SETUP ---
 def setup_logging():
