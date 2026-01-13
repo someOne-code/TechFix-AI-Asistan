@@ -38,13 +38,14 @@ class AIManager:
         """Decides if the user wants SQL data or just chat."""
         try:
             prompt = f"""
-            Evaluate the input: If it is outside the scope of {self.company_identity} (e.g., family tree, math, general world facts), return 'OUT_OF_SCOPE' immediately. Do not attempt to answer.
+            Evaluate the input:
+            1. Is it a greeting, thanks, or small talk? -> Return "CHAT"
+            2. Is it a question about products, stock, prices, or recommendations? -> Return "SQL"
+            3. Is it clearly outside the scope of a music store assistant (e.g., math, politics, history, personal advice)? -> Return "OUT_OF_SCOPE"
 
             Input: "{user_text}"
 
-            Otherwise, Classify (One Word):
-            - Product/Stock/Price/Info/Recommendation -> "SQL"
-            - Greeting/Small Talk/Thanks -> "CHAT"
+            Return ONLY the label (SQL, CHAT, or OUT_OF_SCOPE).
             """
             resp = self.client.chat.completions.create(
                 messages=[{"role": "user", "content": prompt}],
@@ -108,11 +109,14 @@ class AIManager:
         Current Question: "{user_text}"
 
         TASK:
-        1. Check if the product/service exists in the schema.
-        2. IF NOT EXISTS: Return `SELECT 'YOK'`.
-        3. IF EXISTS: Write a valid SQL query.
+        1. Analyze the Current Question and History.
+        2. If the user asks for "more" or "next page", check the history for the previous query and use OFFSET to fetch the next set of results.
+        3. Check if the product/service exists in the schema.
+        4. IF NOT EXISTS: Return `SELECT 'YOK'`.
+        5. IF EXISTS: Write a valid SQL query.
         - Pay attention to Foreign Keys and Table Relationships defined in the schema.
         - Use JOINs correctly.
+        - Always limit results to 5 unless specified otherwise.
         """
         try:
             sql_resp = self.client.chat.completions.create(
@@ -131,27 +135,36 @@ class AIManager:
 
         system_prompt = f"""
         ROLE: You are the professional assistant for {self.company_identity}.
-        CORE MANDATE:
-        - Your ONLY purpose is to assist with music, albums, and company services.
-        - NEVER answer questions about math, personal relations, family trees, or non-music topics.
-        - If the context is 'OUT_OF_SCOPE', you must politely state that you are a corporate assistant for {self.company_identity} and can only help with music-related inquiries.
-        - DO NOT provide any information or answers for out-of-scope topics.
 
-        TONE: Professional, concise, and helpful within limits.
+        CORE MANDATE:
+        - Assist with music, albums, and company services.
+        - NEVER answer out-of-scope questions (math, politics, personal life).
+        - If context is 'OUT_OF_SCOPE', politely decline.
+
+        TONE & STYLE:
+        - Speak like a helpful Turkish customer service representative.
+        - Natural, conversational, and concise.
+        - NO technical jargon (e.g., do not say "SQL", "database", "table", "row").
+        - **DO NOT** mention the company name or vision unless explicitly asked.
+        - Summarize lists naturally (e.g., "We have rock albums like X and Y") instead of reading them item by item.
+        - If the list is long, mention a few and ask if they want to hear more.
         """
 
         if context:
             user_prompt = f"""
-            Müşteri: "{user_text}"
-            Bilgi: "{context}"
-            Lütfen bu bilgiye dayanarak cevap ver.
-            Eğer bilgi 'ÜRÜN_KATEGORISI_YOK' ise, nazikçe bu ürünü satmadığımızı belirt.
-            Eğer bilgi 'HATA' veya 'SISTEM_HATASI' ise, şu an sistemsel bir sorun olduğunu söyle.
+            Customer: "{user_text}"
+            Data/Context: "{context}"
+
+            Instructions:
+            1. Use the Data to answer.
+            2. If Data is 'ÜRÜN_KATEGORISI_YOK', say we don't sell that.
+            3. If Data is 'HATA', say there's a system issue.
+            4. If Data is a list, summarize it nicely in Turkish.
             """
         else:
             user_prompt = f"""
-            Müşteri: "{user_text}"
-            Kısa ve net cevap ver.
+            Customer: "{user_text}"
+            Answer shortly and clearly in Turkish.
             """
 
         try:
